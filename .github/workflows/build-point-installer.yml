@@ -1,0 +1,277 @@
+name: Build Point Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-installer:
+    name: Build Point Installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Download source
+        uses: actions/checkout@v4
+
+      - name: Locate Point project
+        shell: pwsh
+        run: |
+          $buildBat = Get-ChildItem `
+            -Path $env:GITHUB_WORKSPACE `
+            -Filter "build.bat" `
+            -File `
+            -Recurse |
+            Where-Object {
+              $_.FullName -notmatch "\\build\\"
+            } |
+            Select-Object -First 1
+
+          if (-not $buildBat) {
+            Write-Error "build.bat was not found anywhere in the repository."
+            exit 1
+          }
+
+          $projectDirectory = $buildBat.Directory.FullName
+
+          Write-Host "Point project found at:"
+          Write-Host $projectDirectory
+
+          "POINT_PROJECT_DIR=$projectDirectory" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+      - name: Build Point
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path `
+            ${env:ProgramFiles(x86)} `
+            "Microsoft Visual Studio\Installer\vswhere.exe"
+
+          if (-not (Test-Path $vswhere)) {
+            Write-Error "Visual Studio locator was not found."
+            exit 1
+          }
+
+          $visualStudio = & $vswhere `
+            -latest `
+            -products "*" `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+
+          if (-not $visualStudio) {
+            Write-Error "Visual Studio C++ build tools were not found."
+            exit 1
+          }
+
+          $vcvars = Join-Path `
+            $visualStudio `
+            "VC\Auxiliary\Build\vcvars64.bat"
+
+          if (-not (Test-Path $vcvars)) {
+            Write-Error "vcvars64.bat was not found."
+            exit 1
+          }
+
+          $buildRunner = Join-Path $env:RUNNER_TEMP "run-point-build.cmd"
+
+          @"
+          @echo off
+          call "$vcvars"
+          if errorlevel 1 exit /b 1
+
+          cd /d "$env:POINT_PROJECT_DIR"
+          call build.bat
+          if errorlevel 1 exit /b 1
+
+          if not exist "build\Point.exe" (
+              echo ERROR: build\Point.exe was not created.
+              exit /b 1
+          )
+
+          echo Point compilation completed successfully.
+          "@ | Set-Content `
+            -Path $buildRunner `
+            -Encoding ascii
+
+          & cmd.exe /d /c $buildRunner
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Point compilation failed with exit code $LASTEXITCODE."
+            exit $LASTEXITCODE
+          }
+
+      - name: Verify Point executable
+        shell: pwsh
+        run: |
+          $pointExecutable = Join-Path `
+            $env:POINT_PROJECT_DIR `
+            "build\Point.exe"
+
+          if (-not (Test-Path $pointExecutable)) {
+            Write-Error "Point.exe was not found after compilation."
+            exit 1
+          }
+
+          $file = Get-Item $pointExecutable
+
+          Write-Host "Point executable:"
+          Write-Host $file.FullName
+          Write-Host "Size: $($file.Length) bytes"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress --yes
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Inno Setup installation failed."
+            exit $LASTEXITCODE
+          }
+
+      - name: Create installer configuration
+        shell: pwsh
+        run: |
+          $installerDirectory = Join-Path `
+            $env:RUNNER_TEMP `
+            "point-installer"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $installerDirectory `
+            -Force |
+            Out-Null
+
+          $issPath = Join-Path `
+            $env:RUNNER_TEMP `
+            "Point-Installer.iss"
+
+          $buildDirectory = Join-Path `
+            $env:POINT_PROJECT_DIR `
+            "build"
+
+          @"
+          [Setup]
+          AppId={{D29ED65D-93B5-4A1A-AB06-99D169E6DB34}
+          AppName=Point
+          AppVersion=8.10.4
+          AppPublisher=Point
+          DefaultDirName={localappdata}\Programs\Point
+          DefaultGroupName=Point
+          UninstallDisplayName=Point
+          OutputDir=$installerDirectory
+          OutputBaseFilename=Point-Setup
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+          PrivilegesRequired=lowest
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          CloseApplications=yes
+          RestartApplications=no
+          DisableProgramGroupPage=yes
+
+          [Files]
+          Source: "$buildDirectory\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Dirs]
+          Name: "{app}\Inbox"
+          Name: "{app}\Workspace"
+          Name: "{app}\Exports"
+          Name: "{app}\Logs"
+
+          [Icons]
+          Name: "{autoprograms}\Point"; Filename: "{app}\Point.exe"; WorkingDir: "{app}"
+          Name: "{userdesktop}\Point"; Filename: "{app}\Point.exe"; WorkingDir: "{app}"
+
+          [Run]
+          Filename: "{app}\Point.exe"; Description: "Launch Point"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+          "@ | Set-Content `
+            -Path $issPath `
+            -Encoding utf8
+
+          Write-Host "Installer configuration created:"
+          Write-Host $issPath
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $issPath = Join-Path `
+            $env:RUNNER_TEMP `
+            "Point-Installer.iss"
+
+          $possibleCompilers = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          )
+
+          $compiler = $possibleCompilers |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
+
+          if (-not $compiler) {
+            $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+
+            if ($command) {
+              $compiler = $command.Source
+            }
+          }
+
+          if (-not $compiler) {
+            Write-Error "The Inno Setup compiler was not found."
+            exit 1
+          }
+
+          Write-Host "Using Inno Setup compiler:"
+          Write-Host $compiler
+
+          & $compiler $issPath
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Installer creation failed."
+            exit $LASTEXITCODE
+          }
+
+      - name: Verify installer
+        shell: pwsh
+        run: |
+          $installer = Join-Path `
+            $env:RUNNER_TEMP `
+            "point-installer\Point-Setup.exe"
+
+          if (-not (Test-Path $installer)) {
+            Write-Error "Point-Setup.exe was not created."
+            exit 1
+          }
+
+          $file = Get-Item $installer
+
+          Write-Host "Installer created successfully:"
+          Write-Host $file.FullName
+          Write-Host "Size: $($file.Length) bytes"
+
+          Get-FileHash `
+            -Path $installer `
+            -Algorithm SHA256
+
+      - name: Upload Point installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Point-Windows-Installer
+          path: ${{ runner.temp }}\point-installer\Point-Setup.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload portable Point package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Point-Portable
+          path: ${{ env.POINT_PROJECT_DIR }}\build\
+          if-no-files-found: error
+          retention-days: 30
