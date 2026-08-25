@@ -1,0 +1,7 @@
+Copyright (c) 2026 Sunil Kumar Peela.
+All rights reserved.
+
+This prototype source is provided for the owner's private evaluation and
+development. No permission is granted to redistribute, sublicense, or sell it
+without the owner's written authorization.
+

@@ -1,0 +1,16 @@
+POINT END-USER LICENSE
+
+Copyright (c) 2026 Sunil Kumar Peela. All rights reserved.
+
+The owner grants the recipient a non-exclusive right to install and use the
+compiled Point application for lawful personal or authorized organizational
+work. The application is provided without a warranty of uninterrupted or
+error-free operation. Users remain responsible for access authorization,
+source-data accuracy, backups, regulatory review, and validation of results
+before taking production actions.
+
+This permission does not grant ownership of Point or permission to redistribute,
+sell, sublicense, reverse engineer, or publish its source code. Separate written
+authorization from the owner is required for redistribution or commercial sale.
+
+By installing Point, the recipient accepts these terms.
